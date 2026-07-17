@@ -98,7 +98,7 @@ export function getColumnLetter(colIndex: number): string {
 }
 
 // Parse public CSV spreadsheet data
-export function parseCSV(csvText: string): SpreadsheetInfo {
+export function parseCSV(csvText: string, spreadsheetId: string = '1Li7P6qPJIRJRo-P59j3PXA5VRgAkxqDIABx1D1rcGXs'): SpreadsheetInfo {
   const rows: string[][] = [];
   let currentRow: string[] = [];
   let currentVal = '';
@@ -163,7 +163,7 @@ export function parseCSV(csvText: string): SpreadsheetInfo {
   });
   
   return {
-    spreadsheetId: '1Li7P6qPJIRJRo-P59j3PXA5VRgAkxqDIABx1D1rcGXs',
+    spreadsheetId,
     sheetName: 'Página1', // Default
     locations,
     students
@@ -171,14 +171,14 @@ export function parseCSV(csvText: string): SpreadsheetInfo {
 }
 
 // Fetch spreadsheet publicly
-export async function fetchSpreadsheetPublicly(): Promise<SpreadsheetInfo> {
-  const url = `https://docs.google.com/spreadsheets/d/1Li7P6qPJIRJRo-P59j3PXA5VRgAkxqDIABx1D1rcGXs/export?format=csv`;
+export async function fetchSpreadsheetPublicly(spreadsheetId: string): Promise<SpreadsheetInfo> {
+  const url = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv`;
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`Falha ao buscar dados públicos: ${response.statusText}`);
   }
   const text = await response.text();
-  return parseCSV(text);
+  return parseCSV(text, spreadsheetId);
 }
 
 // Fetch spreadsheet using Google Sheets API

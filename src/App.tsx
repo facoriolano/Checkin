@@ -27,11 +27,17 @@ import {
   Sparkles,
   CloudLightning,
   CheckCircle,
+  Copy,
+  Check,
+  ExternalLink,
+  HelpCircle,
+  Info,
+  Settings,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 export default function App() {
-  const [spreadsheetId] = useState('1Li7P6qPJIRJRo-P59j3PXA5VRgAkxqDIABx1D1rcGXs');
+  const [spreadsheetId, setSpreadsheetId] = useState(() => localStorage.getItem('crisma_spreadsheet_id') || '1Li7P6qPJIRJRo-P59j3PXA5VRgAkxqDIABx1D1rcGXs');
   const [sheetName, setSheetName] = useState('Página1');
   const [locations, setLocations] = useState<string[]>([]);
   const [students, setStudents] = useState<Student[]>([]);
@@ -39,6 +45,11 @@ export default function App() {
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
   const [activeTab, setActiveTab] = useState<'PASSAPORTES' | 'SCANNER' | 'DASHBOARD' | 'IMPRESSAO_LOTE'>('DASHBOARD');
   const [studentMode, setStudentMode] = useState<boolean>(false); // Lock into student-only pass view if URL has ?id=...
+
+  // Apps Script & Google Connection Modal States
+  const [showConnectionModal, setShowConnectionModal] = useState<boolean>(false);
+  const [appsScriptInput, setAppsScriptInput] = useState(() => localStorage.getItem('crisma_apps_script_url') || '');
+  const [spreadsheetIdInput, setSpreadsheetIdInput] = useState(() => localStorage.getItem('crisma_spreadsheet_id') || '1Li7P6qPJIRJRo-P59j3PXA5VRgAkxqDIABx1D1rcGXs');
 
   // Auth & Sync States
   const [user, setUser] = useState<UserProfile | null>(null);
@@ -75,8 +86,23 @@ export default function App() {
         setSheetName(parsed.sheetName || 'Página1');
       }
 
-      // Fetch fresh public data from Google Sheets CSV
-      const freshData = await fetchSpreadsheetPublicly();
+      let freshData: SpreadsheetInfo;
+      const appsScriptUrl = localStorage.getItem('crisma_apps_script_url');
+      if (appsScriptUrl) {
+        const res = await fetch(appsScriptUrl);
+        if (!res.ok) throw new Error('Falha ao conectar com o Google Apps Script.');
+        const rawJson = await res.json();
+        freshData = {
+          spreadsheetId,
+          sheetName: rawJson.sheetName || 'Página1',
+          locations: rawJson.locations,
+          students: rawJson.students
+        };
+      } else {
+        // Fetch fresh public data from Google Sheets CSV
+        freshData = await fetchSpreadsheetPublicly(spreadsheetId);
+      }
+
       setLocations(freshData.locations);
       setStudents(freshData.students);
       setSheetName(freshData.sheetName || 'Página1');
@@ -155,11 +181,19 @@ export default function App() {
     }
   };
 
-  const handleManualSync = () => {
-    if (accessToken) {
-      syncWithSheets(accessToken);
-    } else {
-      loadInitialData();
+  const handleManualSync = async () => {
+    setIsSyncing(true);
+    try {
+      if (accessToken) {
+        await syncWithSheets(accessToken);
+      } else {
+        await loadInitialData();
+        showToast('Dados sincronizados com sucesso!', 'success');
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsSyncing(false);
     }
   };
 
@@ -233,13 +267,127 @@ export default function App() {
     }, 1200);
   };
 
+  // Apps Script Connection States
+  const [connectionTab, setConnectionTab] = useState<'script' | 'google'>(() => 
+    localStorage.getItem('crisma_apps_script_url') ? 'script' : 'script'
+  );
+  const [copied, setCopied] = useState(false);
+
+  const googleAppsScriptCode = `function doGet(e) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  
+  // Handle write operation
+  if (e && e.parameter && e.parameter.action === "update") {
+    var rowIndex = parseInt(e.parameter.rowIndex);
+    var colIndex = parseInt(e.parameter.colIndex);
+    var checked = e.parameter.checked === "true";
+    
+    sheet.getRange(rowIndex + 1, colIndex + 1).setValue(checked ? "OK" : "");
+    
+    return ContentService.createTextOutput(JSON.stringify({ success: true }))
+      .setMimeType(ContentService.MimeType.JSON)
+      .setHeader("Access-Control-Allow-Origin", "*");
+  }
+  
+  // Handle read operation
+  var data = sheet.getDataRange().getValues();
+  if (data.length === 0) {
+    return ContentService.createTextOutput(JSON.stringify({ locations: [], students: [] }))
+      .setMimeType(ContentService.MimeType.JSON)
+      .setHeader("Access-Control-Allow-Origin", "*");
+  }
+  
+  var headers = data[0];
+  var locations = headers.slice(2);
+  
+  var students = [];
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    if (!row[0]) continue;
+    
+    var checks = {};
+    for (var j = 0; j < locations.length; j++) {
+      var val = row[j + 2] || "";
+      checks[locations[j]] = String(val).toUpperCase().trim() === "OK";
+    }
+    
+    students.push({
+      id: String(row[1] || ("ID-" + i)),
+      name: String(row[0]),
+      checks: checks,
+      rowIndex: i
+    });
+  }
+  
+  var result = {
+    sheetName: sheet.getName(),
+    locations: locations,
+    students: students
+  };
+  
+  return ContentService.createTextOutput(JSON.stringify(result))
+    .setMimeType(ContentService.MimeType.JSON)
+    .setHeader("Access-Control-Allow-Origin", "*");
+}
+
+function doPost(e) {
+  return doGet(e);
+}`;
+
+  const handleCopyScript = () => {
+    navigator.clipboard.writeText(googleAppsScriptCode);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleSaveConnection = () => {
+    // 1. Save Spreadsheet ID
+    const cleanId = spreadsheetIdInput.trim();
+    if (!cleanId) {
+      showToast('O ID da Planilha não pode ser vazio.', 'error');
+      return;
+    }
+    
+    localStorage.setItem('crisma_spreadsheet_id', cleanId);
+    setSpreadsheetId(cleanId);
+    
+    // 2. Save Apps Script URL
+    const cleanUrl = appsScriptInput.trim();
+    if (cleanUrl) {
+      if (!cleanUrl.startsWith('https://script.google.com')) {
+        showToast('Link do Apps Script inválido. Deve começar com https://script.google.com', 'error');
+        return;
+      }
+      localStorage.setItem('crisma_apps_script_url', cleanUrl);
+    } else {
+      localStorage.removeItem('crisma_apps_script_url');
+      setAppsScriptInput('');
+    }
+    
+    // Clear cache to force fresh reload
+    localStorage.removeItem('crisma_spreadsheet_cache');
+    
+    showToast('Configurações salvas com sucesso! Recarregando dados...', 'success');
+    setShowConnectionModal(false);
+    
+    setTimeout(() => {
+      loadInitialData();
+    }, 500);
+  };
+
   // 4. Handle Logout
   const handleLogout = async () => {
     try {
       await logout();
       setUser(null);
       setAccessToken(null);
-      showToast('Sessão encerrada.', 'info');
+      localStorage.removeItem('crisma_apps_script_url');
+      setAppsScriptInput('');
+      localStorage.removeItem('crisma_spreadsheet_cache');
+      showToast('Sessão encerrada e conexões limpas.', 'info');
+      setTimeout(() => {
+        window.location.reload();
+      }, 1000);
     } catch (err: any) {
       console.error(err);
     }
@@ -286,8 +434,24 @@ export default function App() {
       });
     }
 
-    // B. Google Sheets API update if authorized
-    if (accessToken) {
+    // B. Google Sheets / Apps Script update if authorized
+    const appsScriptUrl = localStorage.getItem('crisma_apps_script_url');
+    if (appsScriptUrl) {
+      setIsSyncing(true);
+      setSyncingCell({ studentId, location });
+      try {
+        const url = `${appsScriptUrl}?action=update&rowIndex=${student.rowIndex}&colIndex=${colIndex}&checked=${checked}`;
+        const res = await fetch(url);
+        if (!res.ok) throw new Error('Falha na resposta do Google Apps Script.');
+        showToast(`Check-in em "${location}" sincronizado com sucesso!`, 'success');
+      } catch (err: any) {
+        console.error(err);
+        showToast('Falha ao sincronizar com o Google Apps Script. Salvo localmente.', 'error');
+      } finally {
+        setIsSyncing(false);
+        setSyncingCell(null);
+      }
+    } else if (accessToken) {
       setIsSyncing(true);
       setSyncingCell({ studentId, location });
       try {
@@ -296,15 +460,13 @@ export default function App() {
       } catch (err: any) {
         console.error(err);
         showToast('Falha ao sincronizar com Google Sheets. Salvo localmente.', 'error');
-        
-        // Revert local state if Sheets API strictly failed (optional, but we choose offline-first, so we keep local draft)
       } finally {
         setIsSyncing(false);
         setSyncingCell(null);
       }
     } else {
       // Prompt user about offline storage
-      showToast(`Carimbo adicionado localmente! Conecte-se com Google para enviar à planilha online.`, 'info');
+      showToast(`Carimbo adicionado localmente! Configure o Apps Script para enviar à planilha online.`, 'info');
     }
   };
 
@@ -378,38 +540,12 @@ export default function App() {
               <span className="bg-amber-100 text-amber-800 border border-amber-200 px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1">
                 <Sparkles className="w-3.5 h-3.5" /> Passaporte do Aluno
               </span>
-            ) : user ? (
-              // Signed-In Coordinator Profile Info
-              <div className="flex items-center gap-2">
-                <div className="hidden sm:block text-right">
-                  <p className="text-xs font-bold text-slate-800 leading-none">{user.name}</p>
-                  <p className="text-[9px] text-emerald-600 font-extrabold uppercase mt-0.5 tracking-wider">Planilha Conectada</p>
-                </div>
-                {user.photoURL ? (
-                  <img src={user.photoURL} alt={user.name} className="w-8 h-8 rounded-full border border-emerald-500 shadow-sm" referrerPolicy="no-referrer" />
-                ) : (
-                  <div className="w-8 h-8 rounded-full bg-emerald-500 text-white flex items-center justify-center font-bold text-xs">
-                    {user.name[0]}
-                  </div>
-                )}
-                <button
-                  onClick={handleLogout}
-                  className="p-2 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-xl transition-colors"
-                  title="Sair da Planilha"
-                  id="btn-google-logout"
-                >
-                  <LogOut className="w-4 h-4" />
-                </button>
-              </div>
             ) : (
-              // Login trigger button
-              <button
-                onClick={handleLogin}
-                className="bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold px-4 py-2.5 rounded-xl flex items-center gap-1.5 transition-colors shadow-sm cursor-pointer"
-                id="btn-google-login"
-              >
-                <Lock className="w-3.5 h-3.5 text-amber-400" /> Conectar Planilha
-              </button>
+              // Coordinator Mode - Simple static "Planilha Online" status badge (no button, no configuration triggers)
+              <span className="bg-emerald-50 text-emerald-800 border border-emerald-200 px-3.5 py-1.5 rounded-xl text-xs font-extrabold flex items-center gap-1.5 shadow-xs select-none">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse inline-block" />
+                Planilha Online
+              </span>
             )}
           </div>
         </div>
@@ -614,134 +750,124 @@ export default function App() {
           />
         )}
 
-        {showAuthErrorModal && (
+
+
+        {showConnectionModal && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm"
+            className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm overflow-y-auto"
           >
             <motion.div
               initial={{ scale: 0.95, opacity: 0, y: 20 }}
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.95, opacity: 0, y: 20 }}
-              className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-xl w-full overflow-hidden"
+              className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-lg w-full overflow-hidden my-8"
             >
-              <div className="bg-amber-500 p-6 text-white flex items-center gap-4">
+              {/* Header */}
+              <div className="bg-blue-900 p-6 text-white flex items-center gap-4">
                 <div className="bg-white/20 p-3 rounded-xl">
-                  <Lock className="w-8 h-8 text-white" />
+                  <Settings className="w-6 h-6 text-amber-400" />
                 </div>
                 <div>
-                  <h3 className="font-extrabold text-lg tracking-tight">Permissão Necessária ou Domínio Novo</h3>
-                  <p className="text-xs text-amber-100 mt-1">Configuração do Firebase para o GitHub Pages</p>
+                  <h3 className="font-extrabold text-lg tracking-tight">Conexão da Planilha Google</h3>
+                  <p className="text-xs text-blue-200 mt-1">Configure o armazenamento automático das presenças</p>
                 </div>
               </div>
 
-              {/* Tab Selector */}
-              <div className="flex border-b border-slate-200 bg-slate-50">
-                <button
-                  onClick={() => setModalMode('info')}
-                  className={`flex-1 py-3 text-xs font-extrabold text-center border-b-2 transition-all cursor-pointer ${
-                    modalMode === 'info'
-                      ? 'border-blue-600 text-blue-600 bg-white'
-                      : 'border-transparent text-slate-500 hover:text-slate-800'
-                  }`}
-                >
-                  Por que não vejo o botão "Adicionar"?
-                </button>
-                <button
-                  onClick={() => setModalMode('custom_config')}
-                  className={`flex-1 py-3 text-xs font-extrabold text-center border-b-2 transition-all cursor-pointer ${
-                    modalMode === 'custom_config'
-                      ? 'border-blue-600 text-blue-600 bg-white'
-                      : 'border-transparent text-slate-500 hover:text-slate-800'
-                  }`}
-                >
-                  Usar meu próprio Firebase (Recomendado)
-                </button>
-              </div>
+              {/* Form Content */}
+              <div className="p-6 space-y-6">
+                {/* Spreadsheet ID Section */}
+                <div className="space-y-2">
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
+                    1. ID da Planilha Google
+                  </label>
+                  <input
+                    type="text"
+                    value={spreadsheetIdInput}
+                    onChange={(e) => setSpreadsheetIdInput(e.target.value)}
+                    placeholder="Cole o ID da planilha do navegador"
+                    className="w-full p-3 text-xs border border-slate-200 rounded-xl bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-600 transition-all font-mono text-slate-800"
+                  />
+                  <p className="text-[11px] text-slate-400 leading-normal">
+                    O ID é a parte longa do link da planilha, ex: <span className="font-mono bg-slate-100 px-1 py-0.5 rounded">1Li7P6qPJIR...</span>. A planilha deve seguir o layout padrão (Coluna A: Nome, Coluna B: ID, Colunas C+: Salas).
+                  </p>
+                </div>
 
-              <div className="p-6 space-y-4 text-slate-700 max-h-[60vh] overflow-y-auto">
-                {modalMode === 'info' ? (
-                  <div className="space-y-4">
-                    <p className="text-sm leading-relaxed text-slate-600">
-                      O projeto Firebase atual (<strong className="text-slate-800">cobalt-atlas-26rpq</strong>) foi criado automaticamente pelo AI Studio de forma restrita e segura. Você é um usuário com permissões de leitura/escrita de dados, mas <strong className="text-amber-600 font-bold">não é Proprietário/Administrador</strong> do console Firebase desse sandbox, por isso não vê o botão de adicionar.
+                {/* Google Apps Script Section */}
+                <div className="space-y-4 pt-2 border-t border-slate-100">
+                  <div className="space-y-2">
+                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
+                      2. Link do Google Apps Script (Sincronização Online)
+                    </label>
+                    <input
+                      type="text"
+                      value={appsScriptInput}
+                      onChange={(e) => setAppsScriptInput(e.target.value)}
+                      placeholder="https://script.google.com/macros/s/.../exec"
+                      className="w-full p-3 text-xs border border-slate-200 rounded-xl bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-600 transition-all font-mono text-slate-800"
+                    />
+                    <p className="text-[11px] text-slate-400 leading-normal">
+                      Necessário apenas para salvar as presenças diretamente do site para a planilha. Sem ele, as presenças ficam salvas no celular de forma offline.
                     </p>
-                    <p className="text-sm leading-relaxed text-slate-600">
-                      Para que o login e a sincronia com o Google Sheets funcionem perfeitamente a partir do seu próprio site no GitHub Pages, o caminho recomendado é conectar ao seu próprio Firebase gratuito.
-                    </p>
-                    
-                    <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-xs text-blue-800 space-y-2">
-                      <p className="font-bold">💡 É muito simples resolver!</p>
-                      <p className="leading-relaxed">
-                        Selecione a aba <strong>"Usar meu próprio Firebase"</strong> acima para ver como configurar o seu projeto gratuito em 2 minutos. Você só precisará colar o código do seu projeto e o app funcionará instantaneamente no seu site!
-                      </p>
-                    </div>
                   </div>
-                ) : (
-                  <div className="space-y-4 text-xs">
-                    <p className="text-slate-600 leading-relaxed text-[13px]">
-                      Siga esse passo a passo rápido para ter total controle dos seus dados no seu próprio site:
-                    </p>
-                    
-                    <ol className="list-decimal list-inside space-y-2 text-slate-600 leading-relaxed">
-                      <li>Acesse o <a href="https://console.firebase.google.com/" target="_blank" rel="noopener noreferrer" className="text-blue-600 font-bold hover:underline">Console do Firebase</a> e clique em <strong>Adicionar projeto</strong> (gratuito).</li>
-                      <li>No menu lateral, vá em <strong>Compilação &gt; Authentication</strong>, clique em <strong>Começar</strong> e ative o provedor do <strong>Google</strong>.</li>
-                      <li>Na aba <strong>Domínios autorizados</strong> do Authentication, adicione seu domínio: <code className="bg-slate-100 px-1.5 py-0.5 rounded font-mono font-bold text-slate-800">facoriolano.github.io</code></li>
-                      <li>Volte na visão geral do projeto, clique no ícone de <strong>Web (&lt;/&gt;)</strong> para registrar o app e copie o código de configuração (<code className="font-mono">firebaseConfig = &#123; ... &#125;</code>).</li>
+
+                  {/* Step-by-step Accordion/Guide */}
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
+                    <h4 className="text-xs font-extrabold text-slate-800 flex items-center gap-1.5">
+                      <Info className="w-3.5 h-3.5 text-blue-600" /> Como configurar o Apps Script em 1 minuto?
+                    </h4>
+                    <ol className="list-decimal list-inside text-[11px] text-slate-600 space-y-1.5 leading-relaxed">
+                      <li>Na sua Planilha Google, clique em <strong>Extensões &gt; Apps Script</strong>.</li>
+                      <li>Apague todo o código que estiver lá e cole o nosso script de sincronização.</li>
+                      <li>Clique no botão azul <strong>Implantar &gt; Nova implantação</strong> no topo direito.</li>
+                      <li>Clique na engrenagem ao lado de "Selecione o tipo" e escolha <strong>App da Web</strong>.</li>
+                      <li>Mude "Quem tem acesso" para <strong>Qualquer pessoa</strong>.</li>
+                      <li>Clique em <strong>Implantar</strong>, autorize o acesso à sua planilha e copie a <strong>URL do App da Web</strong> gerada para colar no campo acima!</li>
                     </ol>
 
-                    <div className="space-y-2 pt-2">
-                      <label className="block font-extrabold text-slate-800 text-xs uppercase tracking-wider">
-                        Cole o código do seu firebaseConfig aqui:
-                      </label>
-                      <textarea
-                        value={customConfigText}
-                        onChange={(e) => setCustomConfigText(e.target.value)}
-                        placeholder={`const firebaseConfig = {
-  apiKey: "AIzaSy...",
-  authDomain: "seu-projeto.firebaseapp.com",
-  projectId: "seu-projeto",
-  storageBucket: "seu-projeto.appspot.com",
-  messagingSenderId: "...",
-  appId: "..."
-};`}
-                        rows={6}
-                        className="w-full p-3 font-mono text-[11px] bg-slate-950 text-emerald-400 border border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      />
-                    </div>
-
-                    <div className="flex gap-2 pt-2">
+                    <div className="pt-2">
                       <button
-                        onClick={handleSaveCustomConfig}
-                        disabled={!customConfigText.trim()}
-                        className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-300 disabled:cursor-not-allowed text-white text-xs font-bold py-2.5 px-4 rounded-xl transition-colors cursor-pointer"
+                        type="button"
+                        onClick={handleCopyScript}
+                        className="w-full flex items-center justify-center gap-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 text-xs font-bold py-2 px-3 rounded-lg transition-colors cursor-pointer"
                       >
-                        Salvar e Conectar Meu Firebase
+                        {copied ? (
+                          <>
+                            <Check className="w-3.5 h-3.5 text-emerald-600" /> Script Copiado com Sucesso!
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3.5 h-3.5" /> Copiar Código do Script
+                          </>
+                        )}
                       </button>
-                      
-                      {localStorage.getItem('custom_firebase_config') && (
-                        <button
-                          onClick={handleClearCustomConfig}
-                          className="bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-600 text-xs font-bold py-2.5 px-4 rounded-xl transition-colors cursor-pointer"
-                        >
-                          Restaurar Padrão
-                        </button>
-                      )}
                     </div>
                   </div>
-                )}
+                </div>
               </div>
 
-              <div className="bg-slate-50 border-t border-slate-150 px-6 py-4 flex justify-between items-center">
-                <span className="text-[10px] text-slate-400">
-                  {localStorage.getItem('custom_firebase_config') ? '🟢 Usando Firebase Personalizado' : '🔵 Usando Firebase do AI Studio'}
-                </span>
+              {/* Footer */}
+              <div className="bg-slate-50 border-t border-slate-150 px-6 py-4 flex justify-between items-center gap-3">
                 <button
-                  onClick={() => setShowAuthErrorModal(false)}
-                  className="bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold px-5 py-2.5 rounded-xl transition-colors cursor-pointer"
+                  type="button"
+                  onClick={() => {
+                    // Reset inputs to saved values and close
+                    setSpreadsheetIdInput(spreadsheetId);
+                    setAppsScriptInput(localStorage.getItem('crisma_apps_script_url') || '');
+                    setShowConnectionModal(false);
+                  }}
+                  className="bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-bold px-4 py-2.5 rounded-xl transition-colors cursor-pointer"
                 >
-                  Fechar
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveConnection}
+                  className="bg-blue-900 hover:bg-blue-800 text-white text-xs font-bold px-6 py-2.5 rounded-xl transition-colors cursor-pointer shadow-sm"
+                >
+                  Salvar Configurações
                 </button>
               </div>
             </motion.div>
