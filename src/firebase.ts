@@ -3,8 +3,22 @@ import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User 
 import firebaseConfig from '../firebase-applet-config.json';
 import { Student, SpreadsheetInfo } from './types';
 
+// Get active config from localStorage if available
+export const getActiveFirebaseConfig = () => {
+  const custom = localStorage.getItem('custom_firebase_config');
+  if (custom) {
+    try {
+      return JSON.parse(custom);
+    } catch (e) {
+      console.error('Erro ao decodificar custom_firebase_config:', e);
+    }
+  }
+  return firebaseConfig;
+};
+
 // Initialize Firebase
-const app = initializeApp(firebaseConfig);
+const activeConfig = getActiveFirebaseConfig();
+const app = initializeApp(activeConfig);
 export const auth = getAuth(app);
 
 const provider = new GoogleAuthProvider();

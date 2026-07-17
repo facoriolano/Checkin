@@ -50,6 +50,9 @@ export default function App() {
   // Custom Toast Notifications
   const [notification, setNotification] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
   const [showCertificate, setShowCertificate] = useState<boolean>(false);
+  const [showAuthErrorModal, setShowAuthErrorModal] = useState<boolean>(false);
+  const [modalMode, setModalMode] = useState<'info' | 'custom_config'>('info');
+  const [customConfigText, setCustomConfigText] = useState<string>('');
 
   // Trigger temporary notification toast
   const showToast = (text: string, type: 'success' | 'error' | 'info' = 'info') => {
@@ -176,8 +179,58 @@ export default function App() {
       }
     } catch (err: any) {
       console.error(err);
-      showToast('Falha ao autenticar com o Google.', 'error');
+      if (err.code === 'auth/unauthorized-domain' || (err.message && err.message.includes('unauthorized-domain'))) {
+        setShowAuthErrorModal(true);
+      } else {
+        showToast('Falha ao autenticar com o Google.', 'error');
+      }
     }
+  };
+
+  const handleSaveCustomConfig = () => {
+    try {
+      let cleaned = customConfigText.trim();
+      
+      // If they pasted a whole block of code, let's look for the config object
+      const matchObj = cleaned.match(/(?:const|let|var)?\s*firebaseConfig\s*=\s*(\{[\s\S]*?\});?/);
+      if (matchObj) {
+        cleaned = matchObj[1];
+      } else {
+        const matchAnyObj = cleaned.match(/(\{[\s\S]*?\})/);
+        if (matchAnyObj) {
+          cleaned = matchAnyObj[1];
+        }
+      }
+
+      // Convert standard javascript object keys/syntax to valid JSON
+      let jsonStr = cleaned
+        .replace(/\/\*[\s\S]*?\*\/|([^\\:]|^)\/\/.*$/gm, '') // remove comments
+        .replace(/'/g, '"') // replace single quotes with double quotes
+        .replace(/(\w+)\s*:/g, '"$1":') // wrap keys in quotes
+        .replace(/,\s*}/g, '}'); // remove trailing comma
+
+      const parsed = JSON.parse(jsonStr);
+      if (!parsed.apiKey || !parsed.authDomain || !parsed.projectId) {
+        throw new Error('Configuração inválida. É necessário preencher apiKey, authDomain e projectId.');
+      }
+
+      localStorage.setItem('custom_firebase_config', JSON.stringify(parsed));
+      showToast('Configuração salva! Recarregando...', 'success');
+      setTimeout(() => {
+        window.location.reload();
+      }, 1200);
+    } catch (err: any) {
+      console.error(err);
+      showToast('Erro ao ler a configuração. Certifique-se de colar o código completo.', 'error');
+    }
+  };
+
+  const handleClearCustomConfig = () => {
+    localStorage.removeItem('custom_firebase_config');
+    showToast('Configuração original restaurada! Recarregando...', 'success');
+    setTimeout(() => {
+      window.location.reload();
+    }, 1200);
   };
 
   // 4. Handle Logout
@@ -559,6 +612,140 @@ export default function App() {
             student={selectedStudent}
             onClose={() => setShowCertificate(false)}
           />
+        )}
+
+        {showAuthErrorModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm"
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 20 }}
+              className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-xl w-full overflow-hidden"
+            >
+              <div className="bg-amber-500 p-6 text-white flex items-center gap-4">
+                <div className="bg-white/20 p-3 rounded-xl">
+                  <Lock className="w-8 h-8 text-white" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-lg tracking-tight">Permissão Necessária ou Domínio Novo</h3>
+                  <p className="text-xs text-amber-100 mt-1">Configuração do Firebase para o GitHub Pages</p>
+                </div>
+              </div>
+
+              {/* Tab Selector */}
+              <div className="flex border-b border-slate-200 bg-slate-50">
+                <button
+                  onClick={() => setModalMode('info')}
+                  className={`flex-1 py-3 text-xs font-extrabold text-center border-b-2 transition-all cursor-pointer ${
+                    modalMode === 'info'
+                      ? 'border-blue-600 text-blue-600 bg-white'
+                      : 'border-transparent text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  Por que não vejo o botão "Adicionar"?
+                </button>
+                <button
+                  onClick={() => setModalMode('custom_config')}
+                  className={`flex-1 py-3 text-xs font-extrabold text-center border-b-2 transition-all cursor-pointer ${
+                    modalMode === 'custom_config'
+                      ? 'border-blue-600 text-blue-600 bg-white'
+                      : 'border-transparent text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  Usar meu próprio Firebase (Recomendado)
+                </button>
+              </div>
+
+              <div className="p-6 space-y-4 text-slate-700 max-h-[60vh] overflow-y-auto">
+                {modalMode === 'info' ? (
+                  <div className="space-y-4">
+                    <p className="text-sm leading-relaxed text-slate-600">
+                      O projeto Firebase atual (<strong className="text-slate-800">cobalt-atlas-26rpq</strong>) foi criado automaticamente pelo AI Studio de forma restrita e segura. Você é um usuário com permissões de leitura/escrita de dados, mas <strong className="text-amber-600 font-bold">não é Proprietário/Administrador</strong> do console Firebase desse sandbox, por isso não vê o botão de adicionar.
+                    </p>
+                    <p className="text-sm leading-relaxed text-slate-600">
+                      Para que o login e a sincronia com o Google Sheets funcionem perfeitamente a partir do seu próprio site no GitHub Pages, o caminho recomendado é conectar ao seu próprio Firebase gratuito.
+                    </p>
+                    
+                    <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-xs text-blue-800 space-y-2">
+                      <p className="font-bold">💡 É muito simples resolver!</p>
+                      <p className="leading-relaxed">
+                        Selecione a aba <strong>"Usar meu próprio Firebase"</strong> acima para ver como configurar o seu projeto gratuito em 2 minutos. Você só precisará colar o código do seu projeto e o app funcionará instantaneamente no seu site!
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-4 text-xs">
+                    <p className="text-slate-600 leading-relaxed text-[13px]">
+                      Siga esse passo a passo rápido para ter total controle dos seus dados no seu próprio site:
+                    </p>
+                    
+                    <ol className="list-decimal list-inside space-y-2 text-slate-600 leading-relaxed">
+                      <li>Acesse o <a href="https://console.firebase.google.com/" target="_blank" rel="noopener noreferrer" className="text-blue-600 font-bold hover:underline">Console do Firebase</a> e clique em <strong>Adicionar projeto</strong> (gratuito).</li>
+                      <li>No menu lateral, vá em <strong>Compilação &gt; Authentication</strong>, clique em <strong>Começar</strong> e ative o provedor do <strong>Google</strong>.</li>
+                      <li>Na aba <strong>Domínios autorizados</strong> do Authentication, adicione seu domínio: <code className="bg-slate-100 px-1.5 py-0.5 rounded font-mono font-bold text-slate-800">facoriolano.github.io</code></li>
+                      <li>Volte na visão geral do projeto, clique no ícone de <strong>Web (&lt;/&gt;)</strong> para registrar o app e copie o código de configuração (<code className="font-mono">firebaseConfig = &#123; ... &#125;</code>).</li>
+                    </ol>
+
+                    <div className="space-y-2 pt-2">
+                      <label className="block font-extrabold text-slate-800 text-xs uppercase tracking-wider">
+                        Cole o código do seu firebaseConfig aqui:
+                      </label>
+                      <textarea
+                        value={customConfigText}
+                        onChange={(e) => setCustomConfigText(e.target.value)}
+                        placeholder={`const firebaseConfig = {
+  apiKey: "AIzaSy...",
+  authDomain: "seu-projeto.firebaseapp.com",
+  projectId: "seu-projeto",
+  storageBucket: "seu-projeto.appspot.com",
+  messagingSenderId: "...",
+  appId: "..."
+};`}
+                        rows={6}
+                        className="w-full p-3 font-mono text-[11px] bg-slate-950 text-emerald-400 border border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+
+                    <div className="flex gap-2 pt-2">
+                      <button
+                        onClick={handleSaveCustomConfig}
+                        disabled={!customConfigText.trim()}
+                        className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-300 disabled:cursor-not-allowed text-white text-xs font-bold py-2.5 px-4 rounded-xl transition-colors cursor-pointer"
+                      >
+                        Salvar e Conectar Meu Firebase
+                      </button>
+                      
+                      {localStorage.getItem('custom_firebase_config') && (
+                        <button
+                          onClick={handleClearCustomConfig}
+                          className="bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-600 text-xs font-bold py-2.5 px-4 rounded-xl transition-colors cursor-pointer"
+                        >
+                          Restaurar Padrão
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="bg-slate-50 border-t border-slate-150 px-6 py-4 flex justify-between items-center">
+                <span className="text-[10px] text-slate-400">
+                  {localStorage.getItem('custom_firebase_config') ? '🟢 Usando Firebase Personalizado' : '🔵 Usando Firebase do AI Studio'}
+                </span>
+                <button
+                  onClick={() => setShowAuthErrorModal(false)}
+                  className="bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold px-5 py-2.5 rounded-xl transition-colors cursor-pointer"
+                >
+                  Fechar
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
         )}
       </AnimatePresence>
 
