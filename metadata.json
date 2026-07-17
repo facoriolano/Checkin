@@ -1,0 +1,10 @@
+{
+  "name": "Check-in Crisma",
+  "description": "Aplicativo de check-in para alunos do Crisma com passaporte digital, gerador de QR code e integração com Google Sheets.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
